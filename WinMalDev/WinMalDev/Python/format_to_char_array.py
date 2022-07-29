@@ -2,7 +2,6 @@
 
 import sys
 
-
 if len(sys.argv) < 2:
     print("[*] Usage: ./program.py \"VirtualAlloc\"")
     sys.exit(0)
@@ -10,7 +9,13 @@ if len(sys.argv) < 2:
 _PROCNAME = sys.argv[1]
 
 def toArray(PROCNAME):
-    initialise = "char str%s[] = { " % (_PROCNAME)
+    PROCNAME_HAS_DOT = PROCNAME
+    PROCNAME_NO_DOT = ""
+    
+    if PROCNAME_HAS_DOT.find("."):
+        PROCNAME_NO_DOT = PROCNAME_HAS_DOT.replace(".", "")
+    
+    initialise = "char str%s[]" % PROCNAME_NO_DOT + " = { "
 
     fPROCNAME = ''
 
