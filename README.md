@@ -11,3 +11,7 @@ Thanks to -
 * @spotheplanet
 * @reenz0h
 * @shaddy43
+
+## Disclaimer
+
+Only for educational purposes. Owner of the repository does not take responsibility of the usage of the code contained here.
